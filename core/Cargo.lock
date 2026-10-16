@@ -293,6 +293,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "blueos-disk-usage-api"
+version = "0.1.0"
+dependencies = [
+ "blueos-domain",
+ "blueos-example-domain",
+ "blueos-idl",
+ "blueos-jobs",
+]
+
+[[package]]
+name = "blueos-disk-usage-app"
+version = "0.1.0"
+dependencies = [
+ "blueos-api",
+ "blueos-comms",
+ "blueos-domain",
+ "blueos-example-api",
+ "blueos-example-domain",
+ "blueos-idl",
+ "blueos-jobs",
+ "blueos-service",
+ "clap",
+ "serde",
+ "tokio",
+ "toml",
+ "trybuild",
+]
+
+[[package]]
+name = "blueos-disk-usage-domain"
+version = "0.1.0"
+dependencies = [
+ "blueos-domain",
+ "blueos-jobs",
+ "thiserror",
+]
+
+[[package]]
 name = "blueos-domain"
 version = "0.1.0"
 dependencies = [

@@ -30,6 +30,9 @@ members = [
     "services/example/cookbook",
     "services/example/logic/api",
     "services/example/logic/domain",
+    "services/disk_usage_2/app",
+    "services/disk_usage_2/logic/api",
+    "services/disk_usage_2/logic/domain",
 ]
 
 [workspace.package]

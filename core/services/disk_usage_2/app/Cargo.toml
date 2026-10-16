@@ -1,0 +1,27 @@
+[package]
+name = "blueos-disk-usage-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blueos-idl.workspace = true
+blueos-jobs.workspace = true
+blueos-service.workspace = true
+blueos-example-api.workspace = true
+blueos-example-domain.workspace = true
+clap = { workspace = true, features = ["derive", "std"] }
+
+[dev-dependencies]
+blueos-api.workspace = true
+blueos-domain.workspace = true
+blueos-comms.workspace = true
+blueos-service = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+serde = { workspace = true, features = ["derive", "std"] }
+toml.workspace = true
+trybuild.workspace = true
+
+[lints]
+workspace = true

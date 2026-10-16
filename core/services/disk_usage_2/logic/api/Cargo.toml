@@ -1,0 +1,15 @@
+[package]
+name = "blueos-disk-usage-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blueos-domain.workspace = true
+blueos-idl.workspace = true
+blueos-example-domain.workspace = true
+blueos-jobs.workspace = true
+
+[lints]
+workspace = true
