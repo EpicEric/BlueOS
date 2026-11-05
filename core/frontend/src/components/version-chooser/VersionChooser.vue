@@ -1,64 +1,135 @@
 <template>
-  <div>
+  <v-container>
+    <not-safe-overlay />
     <v-col
       max-width="1000"
       class="mx-auto"
     >
-      <v-dialog
-        v-model="show_docker_login_dialog"
-        max-width="450"
-      >
-        <DockerLogin
-          @cancel="show_docker_login_dialog = false"
-        />
-      </v-dialog>
       <v-card
-        v-if="!settings.is_pirate_mode"
         max-width="900"
         class="mx-auto my-12 pa-4"
       >
+        <h2>Current Version</h2>
+        <generation-card
+          v-if="status"
+          :generation="status.current"
+          :latest-stable="latest_stable"
+          :activating="activating === status.current.generation"
+        />
+        <spinning-logo
+          v-else
+          size="15%"
+          subtitle="Loading the running version..."
+        />
+
         <v-alert
+          v-if="status?.installed"
+          class="mt-4"
+          border="top"
+          colored-border
+          type="warning"
+          elevation="2"
+        >
+          <div class="d-flex align-center justify-space-between">
+            <span>
+              {{ status.installed.version }} is installed but not running: the machine has to reboot
+              to boot into it.
+            </span>
+            <v-btn
+              color="warning"
+              dark
+              small
+              :disabled="waiting"
+              @click="rebootRequired()"
+            >
+              Reboot
+            </v-btn>
+          </div>
+        </v-alert>
+
+        <v-alert
+          v-if="status?.pending"
+          class="mt-4"
           border="top"
           colored-border
           type="info"
           elevation="2"
         >
-          Turn on Pirate mode to view all available BlueOS versions, including previous installs
-          stored onboard, as well as past and current stable, beta, and development releases
-          downloadable from Blue Robotics.
+          Monitoring this version. It is confirmed automatically once its services are up, and
+          the vehicle returns to {{ knownGoodLabel }} on its own if it does not become healthy.
         </v-alert>
 
-        <h2>Current Version</h2>
-        <version-card
-          v-if="current_version"
-          :image="current_version"
-          :current="true"
-          :last-modified="current_version.last_modified"
-          :loading="loading_images"
-          :up-to-date="!loading_images
-            && !newStableAvailable() && !newBetaAvailable() && !updateIsAvailable(current_version)"
-          :new-stable-available="newStableAvailable()"
-          :new-beta-available="runningBeta() ? newBetaAvailable() : ''"
-          :update-available="updateIsAvailable(current_version)"
-          :latest-stable="latest_stable"
-          @apply="setVersion"
-          @pull-and-apply="pullAndSetVersion"
-        />
         <v-alert
-          v-if="remote_alert_message"
-
-          color="red lighten-2"
-          dark
+          v-if="status?.rolled_back_from"
+          class="mt-4"
+          border="top"
+          colored-border
+          type="error"
+          elevation="2"
+          dismissible
         >
           <div class="d-flex align-center justify-space-between">
-            <span>{{ remote_alert_message }}</span>
+            <span>
+              The last update did not pass its health check, so the vehicle rolled back to
+              {{ status.current.version }}. See
+              <a href="#" @click.prevent="showRollbackDetails = !showRollbackDetails">details</a>.
+            </span>
             <v-btn
               color="warning"
               dark
               small
-              :loading="loading_images"
-              :disabled="loading_images"
-              @click="loadAvailableVersions"
+              :loading="loading"
+              :disabled="loading"
+              @click="refresh()"
+            >
+              Retry
+            </v-btn>
+          </div>
+          <p
+            v-if="showRollbackDetails"
+            class="text-caption ma-0 mt-2"
+          >
+            The failed generation was {{ status.rolled_back_from }}. It is still installed, so it can
+            be inspected or deleted below.
+          </p>
+        </v-alert>
+
+        <v-alert
+          v-if="latest_version"
+          class="mt-4"
+          border="top"
+          colored-border
+          type="info"
+          elevation="2"
+        >
+          <div class="d-flex align-center justify-space-between">
+            <span>BlueOS {{ latest_version.version }} is available.</span>
+            <v-btn
+              color="primary"
+              :disabled="working"
+              :loading="activating === null && upgrading"
+              @click="install(latest_version)"
+            >
+              Update to {{ latest_version.version }}
+            </v-btn>
+          </div>
+        </v-alert>
+
+        <v-alert
+          v-if="releases_error"
+          class="mt-4"
+          color="red lighten-2"
+          dark
+        >
+          <div class="d-flex align-center justify-space-between">
+            <span>{{ releases_error }}</span>
+            <v-btn
+              color="warning"
+              dark
+              small
+              :loading="loading"
+              :disabled="loading"
+              @click="loadReleases"
             >
               Retry
             </v-btn>
@@ -67,689 +138,421 @@
       </v-card>
 
       <v-card
-        v-if="settings.is_pirate_mode"
-        max-width="900"
-        class="mx-auto my-12 pa-4"
-      >
-        <h2>Local Versions</h2>
-        <version-card
-          v-for="(image, index) in local_versions.result.local"
-          :key="`${image.sha}-${index}-local`"
-          :image="image"
-          :updating="updating_bootstrap"
-          :current="image.tag === current_version?.tag && image.repository === current_version?.repository"
-          :bootstrap-version="bootstrap_version"
-          :update-available="updateIsAvailable(image)"
-          :latest-stable="latest_stable"
-          :deleting="isBeingDeleted(image)"
-          :enable-delete="local_versions.result.local.length > 2"
-          @delete="deleteVersion"
-          @apply="setVersion"
-          @pull-and-apply="pullAndSetVersion"
-          @update-bootstrap="updateBootstrap"
-        />
-        <spinning-logo
-          v-if="local_versions.loading"
-          size="15%"
-          subtitle="Loading local images..."
-        />
-      </v-card>
-      <v-card
-        v-if="settings.is_pirate_mode"
         max-width="900"
         class="mx-auto my-12 pa-4"
       >
         <div class="d-flex justify-space-between pb-3">
-          <h2>Remote Versions</h2>
+          <h2>Installed Versions</h2>
           <v-btn
-            color="primary"
-            @click="show_docker_login_dialog = true"
+            icon
+            :loading="loading"
+            :disabled="loading"
+            @click="refresh()"
           >
-            Docker Login
+            <v-icon>mdi-refresh</v-icon>
           </v-btn>
         </div>
-        <v-form
-          @submit.prevent="loadVersions()"
-        >
-          <v-text-field
-            v-model="selected_image"
-            name="BlueOS Remote Repository"
-            label="Remote repository"
-            :append-icon="selected_image != default_repository ? 'mdi-restore' : undefined"
-            @click:append="resetToDefaultRepository()"
-          />
-        </v-form>
-        <v-text-field
-          v-if="showRemoteSearch"
-          v-model="search"
-          label="Search images"
-          prepend-inner-icon="mdi-magnify"
-          clearable
+        <p class="text-caption text--secondary">
+          Every version installed on this card. Switching back to an older one is a rollback you
+          ask for, unlike the automatic one, which only happens when an update fails.
+        </p>
+        <generation-card
+          v-for="generation in generations"
+          :key="generation.generation"
+          :generation="generation"
+          :latest-stable="latest_stable"
+          :activating="activating === generation.generation"
+          :deleting="deleting === generation.generation"
+          :can-delete="canDelete(generation)"
+          @activate="activate(generation, $event)"
+          @delete="deleteGeneration(generation)"
         />
-        <v-alert
-          v-if="remote_alert_message"
-
-          color="red lighten-2"
-          dark
-        >
-          <div class="d-flex align-center justify-space-between">
-            <span>{{ remote_alert_message }}</span>
-            <v-btn
-              color="warning"
-              dark
-              small
-              :loading="loading_images"
-              :disabled="loading_images"
-              @click="loadAvailableVersions"
-            >
-              Retry
-            </v-btn>
-          </div>
-        </v-alert>
         <spinning-logo
-          v-if="loading_images"
+          v-if="loading && generations.length === 0"
           size="15%"
-          subtitle="Loading remote images..."
+          subtitle="Loading installed versions..."
         />
-        <version-card
-          v-for="(image, index) in paginatedComponents"
-          v-else
-          :key="`${image.sha}-${index}`"
-          :image="image"
-          :remote="true"
-          :update-available="updateIsAvailable(image)"
-          :show-pull-button="!imageIsAvailableLocally(image.sha)"
-          @pull-and-apply="pullAndSetVersion"
-        />
-        <v-card-actions
-          v-if="!loading_images"
-          class="justify-center"
+      </v-card>
+
+      <v-card
+        max-width="900"
+        class="mx-auto my-12 pa-4"
+      >
+        <h2>Available Versions</h2>
+        <p
+          v-if="!settings.is_pirate_mode"
+          class="text-caption text--secondary"
         >
-          <v-pagination
-            v-if="totalPages > 1"
-            v-model="page"
-            :length="totalPages"
-          />
-        </v-card-actions>
+          Turn on Pirate mode to see every published version, including beta and development
+          builds.
+        </p>
+        <p
+          v-else
+          class="text-caption text--secondary"
+        >
+          Versions published for this board. Updating downloads the build and installs it for the
+          next boot; if it does not come up healthy, the vehicle returns to the running version.
+        </p>
+        <release-card
+          v-for="release in visible_releases"
+          :key="release.toplevel"
+          :release="release"
+          :latest-stable="latest_stable"
+          :installed="isInstalled(release)"
+          :upgrade="latest_version?.toplevel === release.toplevel"
+          :activating="activating_release === release.version"
+          :downloading="downloading_release === release.version"
+          @activate="install(release)"
+          @download="download(release)"
+        />
+        <spinning-logo
+          v-if="loading && releases.length === 0"
+          size="15%"
+          subtitle="Loading available versions..."
+        />
+        <p
+          v-else-if="!loading && releases.length === 0 && !releases_error"
+          class="text-caption text--secondary"
+        >
+          This vehicle was built without a release manifest, so there is nothing to download.
+          Versions can still be deployed with `nixos-rebuild` or deploy-rs, which are protected by
+          the same rollback.
+        </p>
       </v-card>
     </v-col>
-    <pull-progress
-      :progress="pull_output"
-      :show="show_pull_output"
-      :download="download_percentage"
-      :extraction="extraction_percentage"
-      :statustext="status_text"
-    />
-    <v-card
-      v-if="settings.is_pirate_mode"
-      max-width="900"
-      class="mx-auto pa-4"
-    >
-      <h2>Manual upload</h2>
-      Use this to upload a .tar docker image. These can be downloaded from
-      <a
-        href="https://github.com/bluerobotics/BlueOS/actions/workflows/test-and-deploy.yml"
-        target="_blank"
-      >Github's CI</a>
-      or generated locally using "docker save"
-      <v-file-input
-        v-if="!disable_upload_controls"
-        id="file"
-        show-size
-        accept=".tar"
-        :rules="[isFileInputNotEmpty]"
-        :error-messages="file_input_error"
-        label="File input"
-      />
-      <v-progress-linear
-        v-if="disable_upload_controls && upload_percentage !== 100"
-        class="mb-4 mt-4"
-        :value="upload_percentage"
-      />
-      <v-btn
-        v-if="!disable_upload_controls"
-        color="primary"
-        class="mr-2 mb-4 mt-1"
-        @click="validateInputFileForm() && upload()"
-        v-text="'Upload'"
-      />
-
-      <v-alert
-        v-if="upload_percentage == 100"
-        border="bottom"
-        colored-border
-        type="info"
-        elevation="2"
-      >
-        Decompressing file, this usually takes up to one minute, please stand by...
-        <spinning-logo
-          v-if="upload_percentage == 100"
-          size="15%"
-          subtitle="Decompressing file..."
-        />
-      </v-alert>
-    </v-card>
     <v-overlay
       :z-index="10"
       :value="waiting"
     >
       <spinning-logo
         size="100%"
-        subtitle="Switching to new core..."
+        :subtitle="waiting_text"
       />
     </v-overlay>
-  </div>
+  </v-container>
 </template>
 
 <script lang="ts">
-import Fuse from 'fuse.js'
-import { gt as sem_ver_greater, SemVer } from 'semver'
 import Vue from 'vue'
 
-import PullProgress from '@/components/utils/PullProgress.vue'
 import Notifier from '@/libs/notifier'
 import settings from '@/libs/settings'
-import helper from '@/store/helper'
+import commander from '@/store/commander'
+import { ShutdownType } from '@/types/commander'
 import { version_chooser_service } from '@/types/frontend_services'
-import { InternetConnectionState } from '@/types/helper'
 import {
-  isServerResponse,
-  LocalVersionsQuery, Version, VersionsQuery, VersionType,
+  ActivationMode, ActivationResponse, Generation, Release, Status,
 } from '@/types/version-chooser'
-import back_axios from '@/utils/api'
-import PullTracker from '@/utils/pull_tracker'
-// Version Chooser Utils
+import { isBackendOffline } from '@/utils/api'
 import * as VCU from '@/utils/version_chooser'
 
+import NotSafeOverlay from '../common/NotSafeOverlay.vue'
 import SpinningLogo from '../common/SpinningLogo.vue'
-import DockerLogin from './DockerLogin.vue'
-import VersionCard from './VersionCard.vue'
+import GenerationCard from './GenerationCard.vue'
+import ReleaseCard from './ReleaseCard.vue'
 
 const notifier = new Notifier(version_chooser_service)
+
+/**
+ * The daemon activates a generation by restarting the services that changed, so
+ * the backend goes away for a moment. Waiting for it to answer again is what
+ * tells the user the update actually landed, rather than reloading into a
+ * half-restarted system.
+ */
+const BACKEND_OFFLINE_TIMEOUT_MS = 20000
+const BACKEND_ONLINE_TIMEOUT_MS = 120000
+/** A switch restarts every service, so it is given the same window the daemon
+ * allows it before giving up. */
+const ACTIVATION_TIMEOUT_MS = 5 * 60 * 1000
+const POLL_INTERVAL_MS = 1000
 
 export default Vue.extend({
   name: 'VersionChooser',
   components: {
-    DockerLogin,
+    NotSafeOverlay,
+    GenerationCard,
+    ReleaseCard,
     SpinningLogo,
-    VersionCard,
-    PullProgress,
   },
   data() {
-    const default_repository = 'bluerobotics/blueos-core'
     return {
       settings,
-      bootstrap_version: undefined as (undefined | string),
-      pull_output: '',
-      show_pull_output: false,
-      page: 1,
-      search: '',
-      local_versions: {
-        result: {
-          local: [],
-          error: null,
-        } as LocalVersionsQuery,
-        loading: false,
-      },
-      available_versions: {
-        local: [],
-        remote: [],
-        error: null,
-      } as VersionsQuery,
-      latest_stable: undefined as (undefined | string),
-      latest_beta: undefined as (undefined | string),
-      disable_upload_controls: false,
-      upload_percentage: 0,
-      download_percentage: 0,
-      extraction_percentage: 0,
-      status_text: '',
-      current_version: null as (null | Version),
-      loading_images: false,
-      updating_bootstrap: false,
+      status: null as (null | Status),
+      generations: [] as Generation[],
+      releases: [] as Release[],
+      releases_error: null as (null | string),
+      loading: false,
       waiting: false,
-      default_repository,
-      selected_image: default_repository,
-      deleting: '', // image currently being deleted, if any
-      file_input_error: '',
-      show_docker_login_dialog: false,
+      waiting_text: '',
+      activating: null as (null | number),
+      activating_release: null as (null | string),
+      downloading_release: null as (null | string),
+      deleting: null as (null | number),
+      upgrading: false,
+      showRollbackDetails: false,
     }
   },
   computed: {
-    // Keyed off the loaded images instead of the repository field, so the bar
-    // doesn't flicker while the field is still being typed into
-    showRemoteSearch(): boolean {
-      const [first] = this.available_versions.remote
-      return first !== undefined && !first.repository.startsWith('bluerobotics/')
+    working(): boolean {
+      return this.loading || this.waiting
+        || this.activating !== null
+        || this.activating_release !== null
+        || this.downloading_release !== null
     },
-    fuse(): Fuse<Version> {
-      return new Fuse(this.available_versions.remote, {
-        keys: ['tag'],
-        shouldSort: true,
-        threshold: 0.3,
-      })
+    latest_stable(): string {
+      return VCU.latestRelease(this.releases, false)?.version ?? ''
     },
-    filteredRemoteVersions(): Version[] {
-      if (!this.showRemoteSearch || !this.search) {
-        return this.available_versions.remote
+    latest_version(): Release | undefined {
+      if (!this.status) {
+        return undefined
       }
-      return this.fuse.search(this.search).map(({ item }) => item)
+      return VCU.getAvailableUpdate(this.status.current.version, this.releases)
     },
-    paginatedComponents(): Version[] {
-      return this.filteredRemoteVersions.slice((this.page - 1) * 10, this.page * 10)
-    },
-    totalPages(): number {
-      return Math.ceil(this.filteredRemoteVersions.length / 10)
-    },
-    inputFileRequiredMessage(): string {
-      return 'File is required'
-    },
-    internet_state(): InternetConnectionState {
-      return helper.has_internet
-    },
-    is_offline(): boolean {
-      return this.internet_state === InternetConnectionState.OFFLINE
-    },
-    can_fetch_remote(): boolean {
-      return this.internet_state === InternetConnectionState.ONLINE
-        || this.internet_state === InternetConnectionState.LIMITED
-    },
-    remote_alert_message(): string | null {
-      if (this.is_offline) {
-        return "No internet connection available, can't fetch remote images"
+    /** Without pirate mode only the newest stable build is offered. */
+    visible_releases(): Release[] {
+      const sorted = VCU.sortReleases(this.releases)
+      if (this.settings.is_pirate_mode) {
+        return sorted.slice(0, 10)
       }
-      return this.available_versions.error
+      const stable = sorted.filter((release) => VCU.isSemVer(release.version)
+        && !VCU.isPreRelease(release.version))
+      return stable.slice(0, 1)
     },
-  },
-  watch: {
-    search() {
-      this.page = 1
-    },
-    is_offline(offline: boolean) {
-      if (offline) {
-        this.resetToNoInternetAvailable()
-      }
-    },
-    can_fetch_remote(can_fetch: boolean) {
-      if (can_fetch) {
-        this.loadAvailableVersions()
-      }
+    knownGoodLabel(): string {
+      return this.status?.known_good?.generation
+        ? `generation ${this.status.known_good.generation}`
+        : 'the last version that worked'
     },
   },
   mounted() {
-    this.loadCurrentVersion()
+    this.refresh()
   },
   methods: {
-    backendIsOnline() {
-      return new Promise((resolve) => {
-        back_axios({
-          method: 'get',
-          url: '/version-chooser/v1.0/version/current',
-          timeout: 500,
-        })
-          .then(() => {
-            resolve(true)
-          })
-          .catch(() => {
-            resolve(false)
-          })
-      })
+    /**
+     * The status endpoint is also how the frontend finds out whether the backend
+     * is up at all, so it is polled directly: `back_axios` would treat the
+     * restart as an offline backend and reject every call for a while.
+     */
+    async backendIsOnline(): Promise<boolean> {
+      return fetch('/updates/v1.0/status', { method: 'GET' })
+        .then((response) => response.ok)
+        .catch(() => false)
     },
 
-    async waitForBackendToGoOffline() {
-      let timeout = 0
-      let interval = 0
-      return new Promise((resolve, reject) => {
-        timeout = setTimeout(
-          () => {
-            reject(new Error('backend took to long to shutdown!'))
-            clearInterval(interval)
-          },
-          20000,
-        )
-        interval = setInterval(() => {
-          this.backendIsOnline().then((backend_online) => {
-            if (!backend_online) {
-              clearTimeout(timeout)
-              clearInterval(interval)
-              resolve('backend went offline')
-            }
-          })
-        }, 1000)
-      })
-    },
+    async waitForBackend(offline_first: boolean): Promise<void> {
+      const deadline = Date.now() + (offline_first ? BACKEND_OFFLINE_TIMEOUT_MS : BACKEND_ONLINE_TIMEOUT_MS)
+      const want_online = !offline_first
 
-    waitForBackendToGoOnline() {
-      let timeout = 0
-      let interval = 0
-      return new Promise((resolve, reject) => {
-        timeout = setTimeout(
-          () => {
-            reject(new Error('backend took to long to come back'))
-            clearInterval(interval)
-          },
-          120000,
-        )
-        interval = setInterval(() => {
-          this.backendIsOnline().then((backend_online) => {
-            if (backend_online) {
-              clearTimeout(timeout)
-              clearInterval(interval)
-              resolve('backend went online')
-            }
-          })
-        }, 1000)
-      })
-    },
-
-    async waitForBackendToRestart(reload: boolean) {
-      this.waiting = true
-      try {
-        await this.waitForBackendToGoOffline()
-        await this.waitForBackendToGoOnline()
-      } catch (e) {
-        console.log('Backend took too long to restart')
-      } finally {
-        if (reload) {
-          this.waiting = false
-          window.location.reload()
+      while (Date.now() < deadline) {
+        // eslint-disable-next-line no-await-in-loop
+        const online = await this.backendIsOnline()
+        if (online === want_online) {
+          return
         }
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => { setTimeout(resolve, POLL_INTERVAL_MS) })
       }
+      throw new Error('the update daemon did not come back in time')
     },
 
-    runningBeta() {
-      return VCU.getVersionType(this.current_version) === VersionType.Beta
+    async refresh(): Promise<void> {
+      this.loading = true
+      await Promise.all([this.loadStatus(), this.loadGenerations(), this.loadReleases()])
+      this.loading = false
     },
-    newBetaAvailable() {
-      if (!this.current_version) {
-        return ''
-      }
-      if (this.latest_beta !== undefined && this.latest_beta !== this.current_version.tag) {
-        return this.latest_beta
-      }
-      return ''
-    },
-    newStableAvailable() {
-      if (!this.current_version || !VCU.isSemVer(this.current_version.tag)) {
-        return ''
-      }
-      if (this.latest_stable !== undefined
-        && sem_ver_greater(new SemVer(this.latest_stable), new SemVer(this.current_version.tag))) {
-        return this.latest_stable
-      }
-      return ''
-    },
-    async loadLocalVersions() {
-      this.local_versions.loading = true
-      this.local_versions.result.local = []
-      this.local_versions.result.error = null
 
-      await VCU.loadLocalVersions()
-        .then((versions_query) => {
-          this.local_versions.loading = false
-          this.local_versions.result = versions_query
-        })
+    async loadStatus(): Promise<void> {
+      await VCU.loadStatus()
+        .then((status) => { this.status = status })
         .catch((error) => {
-          this.local_versions.result = {
-            local: [],
-            error: `Failed to communicate with backend: ${error}`,
+          if (isBackendOffline(error)) {
+            return
           }
+          const message = `Could not read the update status: ${VCU.describeError(error)}`
+          notifier.pushError('VERSION_CHOOSER_STATUS_FAIL', message)
         })
     },
-    async loadAvailableVersions() {
-      if (this.is_offline) {
-        this.resetToNoInternetAvailable()
-        return
-      }
-      if (!this.can_fetch_remote) {
-        return
-      }
 
-      this.loading_images = true
-      this.available_versions.error = null
-
-      await VCU.loadAvailableVersions(this.selected_image)
-        .then((versions_query) => {
-          this.available_versions = versions_query
-        })
-        .finally(() => {
-          this.loading_images = false
-          this.available_versions = VCU.sortImages(this.available_versions)
-          this.latest_beta = VCU.getLatestBeta(this.available_versions)?.tag
-          this.latest_stable = VCU.getLatestStable(this.available_versions)?.tag
-        })
+    async loadGenerations(): Promise<void> {
+      await VCU.loadGenerations()
+        .then((generations) => { this.generations = generations })
         .catch((error) => {
-          this.available_versions = {
-            local: [],
-            remote: [],
-            error: `Failed to communicate with backend: ${error}`,
+          if (isBackendOffline(error)) {
+            return
           }
+          const message = `Could not list the installed versions: ${VCU.describeError(error)}`
+          notifier.pushError('VERSION_CHOOSER_GENERATIONS_FAIL', message)
         })
     },
-    async loadVersions() {
-      Promise.all([
-        this.loadLocalVersions(),
-        this.loadAvailableVersions(),
-      ])
-    },
-    async loadCurrentVersion() {
-      this.bootstrap_version = await VCU.loadBootstrapCurrentVersion()
-      await VCU.loadCurrentVersion()
-        .then((image) => {
-          this.current_version = image
-          this.selected_image = image.repository
-          this.loadVersions()
-        })
-    },
-    updateIsAvailable(image: Version) {
-      const remote_counterpart = this.available_versions.remote.find(
-        (remoteImage: Version) => remoteImage.tag === image.tag,
-      )
-      if (!remote_counterpart) {
-        return false
-      }
-      return remote_counterpart.sha !== image.sha && remote_counterpart.sha !== null
-    },
-    async upload() {
-      const file = this.getInputFile()
-      if (file) {
-        this.disable_upload_controls = true
-        await back_axios({
-          method: 'POST',
-          url: '/version-chooser/v1.0/version/load/',
-          timeout: 15 * 60 * 1000, // Wait for 15min
-          data: file,
-          headers: { 'Content-Type': 'undefined' },
-          onUploadProgress: (event) => {
-            this.upload_percentage = Math.round(100 * (event.loaded / event.total))
-          },
-        }).finally(() => {
-          this.disable_upload_controls = false
-          this.upload_percentage = 0
-          setTimeout(() => { this.loadVersions() }, 1000)
-        })
-      }
-    },
-    async pullAndSetVersion(args: string | string[]) {
-      const fullname: string = Array.isArray(args) ? args[0] : args
-      // This streams the output of docker pull
-      this.pull_output = 'Fetching remote image...'
-      this.show_pull_output = true
-      await this.pullVersion(fullname)
-        .then(() => {
-          this.show_pull_output = false
-          this.setVersion(fullname)
-        })
-        .catch((error) => {
-          this.show_pull_output = false
-          notifier.pushError(
-            'VERSION_CHOOSER_PULL_FAIL',
-            `The operation failed: ${error}`,
-            true,
-          )
-        })
-    },
-    async pullVersion(image: string) {
-      // This streams the output of docker pull
-      this.pull_output = 'Fetching remote image...'
-      this.show_pull_output = true
-      const [repository, tag] = image.split(':')
-      return new Promise<void>((resolve, reject) => {
-        const tracker = new PullTracker(
-          () => {
-            setTimeout(() => {
-              this.show_pull_output = false
-              resolve()
-            }, 1000)
-          },
-          (error) => {
-            this.show_pull_output = false
-            reject(error)
-          },
-        )
 
-        back_axios({
-          url: '/version-chooser/v1.0/version/pull/',
-          method: 'POST',
-          data: {
-            repository,
-            tag,
-          },
-          onDownloadProgress: (progressEvent) => {
-            tracker.digestNewData(progressEvent, false)
-            this.pull_output = tracker.pull_output
-            this.download_percentage = tracker.download_percentage
-            this.extraction_percentage = tracker.extraction_percentage
-            this.status_text = tracker.overall_status
-            this.show_pull_output = true
-          },
-        }).then((response) => {
-          if (response.data.error) {
-            reject(response.data.error)
-          }
-          this.show_pull_output = false
-          resolve()
-        })
-      })
-    },
-    async updateBootstrap(image: string) {
-      const [_, tag] = image.split(':')
-      this.updating_bootstrap = true
-      await this.pullVersion(image)
-        .then(() => {
-          this.show_pull_output = false
-          this.setBootstrapVersion(tag)
+    async loadReleases(): Promise<void> {
+      await VCU.loadReleases()
+        .then((response) => {
+          this.releases = response.releases
+          this.releases_error = response.error
         })
         .catch((error) => {
-          this.show_pull_output = false
-          notifier.pushError(
-            'BOOTSTRAP_UPDATE_FAIL',
-            `The operation failed: ${error}`,
-            true,
-          )
+          if (isBackendOffline(error)) {
+            return
+          }
+          this.releases_error = VCU.describeError(error)
         })
-      this.updating_bootstrap = false
     },
-    async setBootstrapVersion(version: string) {
-      await back_axios({
-        method: 'post',
-        url: '/version-chooser/v1.0/bootstrap/current',
-        data: {
-          tag: version,
-        },
-      }).then((response) => {
-        const { data } = response
-        if (isServerResponse(data) && data.status !== 200) {
-          notifier.pushError(
-            'VERSION_CHOOSER_BOOTSTRAP_SET_FAIL',
-            `The operation failed: ${data.title}, ${data.detail} (${data.status})`,
-            true,
-          )
+
+    async activate(generation: Generation, mode: ActivationMode): Promise<void> {
+      this.activating = generation.generation
+      this.waiting = true
+      this.waiting_text = mode === 'boot'
+        ? `Installing ${generation.version}...`
+        : `Switching to ${generation.version}...`
+      try {
+        const outcome = await VCU.activateGeneration(generation.generation, mode)
+        // `boot` leaves the running system alone, so there is nothing to wait
+        // for: the generation only takes over at the next reboot.
+        if (!outcome.reboot_required) {
+          this.waiting_text = 'Waiting for the switch to finish...'
+          await this.waitForActivation(outcome, generation.version)
+          window.location.reload()
           return
         }
         notifier.pushSuccess(
-          'VERSION_CHOOSER_BOOTSTRAP_SET_SUCCESS',
-          `Successfully updated bootstrap version to ${version}`,
+          'VERSION_CHOOSER_ACTIVATE_SUCCESS',
+          `${generation.version} is installed. Reboot to boot into it.`,
           true,
         )
-        window.location.reload()
-      })
+      } catch (error) {
+        notifier.pushError(
+          'VERSION_CHOOSER_ACTIVATE_FAIL',
+          `Could not switch to ${generation.version}: ${VCU.describeError(error)}`,
+          true,
+        )
+      } finally {
+        this.activating = null
+        this.waiting = false
+        await this.refresh()
+      }
     },
-    async setVersion(args: string | string[]) {
-      const fullname: string = Array.isArray(args) ? args[0] : args
-      const [repository, tag] = fullname.split(':')
-      await back_axios({
-        method: 'post',
-        url: '/version-chooser/v1.0/version/current',
-        data: {
-          repository,
-          tag,
-        },
-      }).finally(() => { this.waitForBackendToRestart(true) })
+
+    /**
+     * The daemon answers an activation with 202 and then gets restarted by the
+     * switch it started, so there is no response left to read the outcome from.
+     * Polling `/status` is, and it ends when the generation we asked for is what
+     * is running. Waiting for the daemon to go away first would race: a fast
+     * switch can finish before a poll ever observes it offline.
+     */
+    async waitForActivation(outcome: ActivationResponse, label: string): Promise<void> {
+      const deadline = Date.now() + ACTIVATION_TIMEOUT_MS
+
+      while (Date.now() < deadline) {
+        // eslint-disable-next-line no-await-in-loop
+        const status = await VCU.loadStatus().catch(() => undefined)
+        if (status?.current.toplevel === outcome.toplevel) {
+          return
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => { setTimeout(resolve, POLL_INTERVAL_MS) })
+      }
+
+      // The daemon is back but still reports the old generation, so the switch
+      // failed after it started. Its output is the only account of why.
+      const status = await VCU.loadStatus().catch(() => undefined)
+      const detail = status?.last_switch_log ?? 'no output was recorded'
+      throw new Error(`${label} did not start within the deadline: ${detail}`)
     },
-    async deleteVersion(args: string | string[]) {
-      const fullname: string = Array.isArray(args) ? args[0] : args
-      if (this.deleting === fullname) {
+
+    async install(release: Release): Promise<void> {
+      this.activating_release = release.version
+      this.waiting = true
+      this.waiting_text = `Downloading ${release.version}...`
+      try {
+        await VCU.activateRelease(release.version, 'boot')
+        notifier.pushSuccess(
+          'VERSION_CHOOSER_INSTALL_SUCCESS',
+          `${release.version} is installed. Reboot to boot into it.`,
+          true,
+        )
+        await this.refresh()
+      } catch (error) {
+        notifier.pushError(
+          'VERSION_CHOOSER_INSTALL_FAIL',
+          `Could not install ${release.version}: ${VCU.describeError(error)}`,
+          true,
+        )
+      } finally {
+        this.activating_release = null
+        this.waiting = false
+      }
+    },
+
+    async download(release: Release): Promise<void> {
+      this.downloading_release = release.version
+      try {
+        await VCU.downloadRelease(release.version)
+        notifier.pushSuccess(
+          'VERSION_CHOOSER_DOWNLOAD_SUCCESS',
+          `${release.version} is downloaded and can be installed without internet.`,
+        )
+        await this.refresh()
+      } catch (error) {
+        notifier.pushError(
+          'VERSION_CHOOSER_DOWNLOAD_FAIL',
+          `Could not download ${release.version}: ${VCU.describeError(error)}`,
+          true,
+        )
+      } finally {
+        this.downloading_release = null
+      }
+    },
+
+    async deleteGeneration(generation: Generation): Promise<void> {
+      const label = `${generation.version} (generation ${generation.generation})`
+      if (!window.confirm(`Delete ${label}? The build can be downloaded again if it is published.`)) {
         return
       }
-      const [repository, tag] = fullname.split(':')
-      this.deleting = fullname
-      await back_axios({
-        method: 'delete',
-        url: '/version-chooser/v1.0/version/delete',
-        data: {
-          repository,
-          tag,
-        },
-      }).then(() => {
-        // Remove this image in the frontend, as calling loadVersions()
-        // takes a longer time to fetch all images
-        this.local_versions.result.local = this.local_versions.result.local.filter(
-          (element) => element.repository !== repository || element.tag !== tag,
+      this.deleting = generation.generation
+      try {
+        await VCU.deleteGeneration(generation.generation)
+        notifier.pushSuccess('VERSION_CHOOSER_DELETE_SUCCESS', `Deleted ${label}.`)
+        await this.refresh()
+      } catch (error) {
+        notifier.pushError(
+          'VERSION_CHOOSER_DELETE_FAIL',
+          `Could not delete ${label}: ${VCU.describeError(error)}`,
+          true,
         )
-      })
-        .catch((error) => { alert(error.response?.data ?? error.message) })
-        .finally(() => { this.deleting = '' })
-    },
-    imageIsAvailableLocally(sha: string) : boolean {
-      if (!('local' in this.available_versions)) {
-        return false
+      } finally {
+        this.deleting = null
       }
-      return this.available_versions.local.some((image) => image.sha === sha)
     },
-    getInputFile(): File | undefined {
-      const { files } = document.getElementById('file') as HTMLInputElement
 
-      return files?.[0]
+    /**
+     * The daemon refuses to delete the running generation and the rollback
+     * target, so the button is only offered where it can succeed.
+     */
+    canDelete(generation: Generation): boolean {
+      return !generation.current && !generation.known_good
     },
-    isFileInputNotEmpty(v: File | null): true | string {
-      this.file_input_error = ''
-      return !!v || this.inputFileRequiredMessage
-    },
-    validateInputFileForm(): boolean {
-      const valid = this.getInputFile() != null
 
-      if (!valid) {
-        this.file_input_error = this.inputFileRequiredMessage
+    isInstalled(release: Release): boolean {
+      return this.generations.some((generation) => generation.toplevel === release.toplevel)
+    },
+
+    async rebootRequired(): Promise<void> {
+      this.waiting = true
+      this.waiting_text = 'Waiting for the vehicle to reboot...'
+      await commander.shutdown(ShutdownType.Reboot)
+      try {
+        await this.waitForBackend(true)
+        await this.waitForBackend(false)
+        window.location.reload()
+      } catch (error) {
+        notifier.pushError(
+          'VERSION_CHOOSER_REBOOT_FAIL',
+          `The vehicle did not come back in time: ${VCU.describeError(error)}`,
+          true,
+        )
+        this.waiting = false
       }
-
-      return valid
-    },
-    resetToNoInternetAvailable() {
-      this.available_versions = {
-        ...this.available_versions,
-        remote: [],
-        error: null,
-      }
-      this.latest_stable = undefined
-      this.latest_beta = undefined
-    },
-    isBeingDeleted(image: Version) {
-      return this.deleting === `${image.repository}:${image.tag}`
-    },
-    resetToDefaultRepository() {
-      this.selected_image = this.default_repository
-      this.search = ''
-      this.loadAvailableVersions()
     },
   },
 })

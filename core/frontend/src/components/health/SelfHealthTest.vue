@@ -6,16 +6,16 @@
       no-gutters
     >
       <v-alert
-        v-if="is_running_factory"
+        v-if="rolled_back"
         border="top"
         colored-border
         type="warning"
         elevation="2"
         dismissible
       >
-        This vehicle is running its "factory" version of BlueOS.
-        This generally means something went wrong, and the system reverted to this version
-        in order to recover.
+        The last BlueOS update did not become healthy, so the vehicle returned to
+        {{ current_version }} by itself. The failed version is still installed and can be
+        inspected in the <a href="/tools/version-chooser">version chooser</a>.
         Please file an issue at <a
           href="https://github.com/bluerobotics/BlueOS/issues"
           target="_blank"
@@ -24,8 +24,7 @@
           href="https://discuss.bluerobotics.com/c/bluerobotics-software/blue-os/85"
           target="_blank"
         >forum</a>.
-        Please include the <a href="#" @click="downloadLogs()">System logs</a>
-        if possible, and what you were doing when this happened.
+        Please include the <a href="#" @click="downloadLogs()">System logs</a> if possible.
       </v-alert>
     </v-row>
   </v-container>
@@ -40,15 +39,18 @@ import * as VCU from '@/utils/version_chooser'
 export default Vue.extend({
   name: 'SelfHealthTest',
   data: () => ({
-    is_running_factory: false,
+    rolled_back: false,
+    current_version: '',
   }),
   async mounted() {
-    await VCU.loadCurrentVersion()
-      .then((image) => {
-        if (image.tag === 'factory') {
-          this.is_running_factory = true
-        }
+    await VCU.loadStatus()
+      .then((status) => {
+        // A rollback is the NixOS equivalent of the factory-version fallback: the
+        // system is running something older than what was asked for.
+        this.rolled_back = status.rolled_back_from !== null
+        this.current_version = status.current.version
       })
+      .catch(() => { /* the version chooser shows an unreachable daemon */ })
   },
   methods: {
     downloadLogs(): void {

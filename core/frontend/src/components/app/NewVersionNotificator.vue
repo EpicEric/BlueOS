@@ -14,9 +14,8 @@
         class="release-notes-preview"
       >
         <release-notes
-          :key="latest_version?.tag"
-          :repository="latest_version?.repository"
-          :tag="latest_version?.tag"
+          :key="latest_version?.version"
+          :version="latest_version?.version ?? ''"
         />
       </v-card-text>
       <v-card-actions class="justify-center">
@@ -27,7 +26,7 @@
           href="/tools/version-chooser"
           @click="should_open = false"
         >
-          Update to {{ latest_version && latest_version.tag }}
+          Update to {{ latest_version && latest_version.version }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -40,7 +39,7 @@ import ReleaseNotes from '@/components/version-chooser/ReleaseNotes.vue'
 import settings from '@/libs/settings'
 import helper from '@/store/helper'
 import { InternetConnectionState } from '@/types/helper'
-import { Version, VersionsQuery } from '@/types/version-chooser'
+import { Release } from '@/types/version-chooser'
 import * as VCU from '@/utils/version_chooser'
 
 export default Vue.extend({
@@ -50,16 +49,9 @@ export default Vue.extend({
   },
   data() {
     return {
-      available_versions: {
-        local: [],
-        remote: [],
-        error: null,
-      } as VersionsQuery,
-      current_version: null as (null | Version),
-      latest_beta: undefined as (undefined | Version),
-      latest_stable: undefined as (undefined | Version),
-      selected_image: 'bluerobotics/blueos-core',
-      latest_version: undefined as (undefined | Version),
+      available_releases: [] as Release[],
+      current_version: '',
+      latest_version: undefined as (undefined | Release),
       should_open: false,
     }
   },
@@ -68,10 +60,9 @@ export default Vue.extend({
       return helper.has_internet === InternetConnectionState.ONLINE
         || helper.has_internet === InternetConnectionState.LIMITED
     },
-    // Non-version tags like 'master' have no release to point at, so the dialog would only be
-    // able to say the notes are unavailable
+    // A build with no release to point at would only be able to say the notes are unavailable
     show_release_notes(): boolean {
-      return this.latest_version !== undefined && VCU.isSemVer(this.latest_version.tag)
+      return this.latest_version !== undefined && VCU.isSemVer(this.latest_version.version)
     },
   },
   watch: {
@@ -85,50 +76,32 @@ export default Vue.extend({
     this.run()
   },
   methods: {
-    latestVersion(): boolean {
-      return this.latest_version !== undefined
-        && this.current_version !== undefined
-        && this.latest_version?.sha !== this.current_version?.sha
-    },
+    /**
+     * The manifest is the only source of "new version": a build that is not
+     * published there is simply not offered, which is also true for a vehicle
+     * updated by deploy-rs to something the publisher has not released.
+     */
     async run() {
-      await VCU.loadCurrentVersion()
-        .then((image) => {
-          this.current_version = image
-          this.selected_image = image.repository
-        })
+      await VCU.loadStatus()
+        .then((status) => { this.current_version = status.current.version })
+        .catch(() => { this.current_version = '' })
 
-      if (!this.can_fetch_remote) {
+      if (!this.can_fetch_remote || this.current_version === '') {
         return
       }
 
-      await VCU.loadAvailableVersions(this.selected_image)
-        .then((versions_query) => {
-          this.available_versions = versions_query
-        })
-        .finally(() => {
-          if (this.available_versions.error) {
-            return
-          }
-          this.available_versions = VCU.sortImages(this.available_versions)
-          this.latest_beta = VCU.getLatestBeta(this.available_versions)
-          this.latest_stable = VCU.getLatestStable(this.available_versions)
-          if (this.current_version) {
-            this.latest_version = VCU.getLatestVersion(this.available_versions, this.current_version)
-          }
+      await VCU.loadReleases()
+        .then((response) => {
+          this.available_releases = response.releases
+          this.latest_version = VCU.getAvailableUpdate(this.current_version, this.available_releases)
           const milliseconds_diff = Date.now() - settings.last_version_update_notification_time.getTime()
           const days_diff = milliseconds_diff / (24 * 60 * 60 * 1000)
-          if (days_diff > 1) {
+          if (days_diff > 1 && this.latest_version !== undefined) {
             settings.updateVersionUpdateNotificationTime()
-            this.should_open = this.latestVersion()
+            this.should_open = true
           }
         })
-        .catch((error) => {
-          this.available_versions = {
-            local: [],
-            remote: [],
-            error: `Failed to communicate with backend: ${error}`,
-          }
-        })
+        .catch(() => { /* the version chooser reports an unreachable manifest */ })
     },
   },
 })

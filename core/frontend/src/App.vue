@@ -325,12 +325,6 @@
             {{ git_info }}
           </a>
         </span>
-        <span
-          v-if="bootstrap_version"
-          class="build_info"
-        >
-          Bootstrap Version: {{ bootstrap_version.split(':')[1] }}
-        </span>
         <!-- eslint-disable vuejs-accessibility/click-events-have-key-events -->
         <span
           id="current-version"
@@ -396,7 +390,6 @@ import wifi from '@/store/wifi'
 import { Service } from '@/types/helper'
 import { convertGitDescribeToUrl } from '@/utils/helper_functions'
 import updateTime from '@/utils/update_time'
-import * as VCU from '@/utils/version_chooser'
 
 import Alerter from './components/app/Alerter.vue'
 import BackendStatusChecker from './components/app/BackendStatusChecker.vue'
@@ -467,7 +460,6 @@ export default Vue.extend({
     context_menu_visible: false,
 
     selected_widgets: settings.user_top_widgets,
-    bootstrap_version: undefined as string|undefined,
     build_clicks: 0,
   }),
   computed: {
@@ -737,7 +729,6 @@ export default Vue.extend({
         this.context_menu_visible = false
       }
     })
-    this.bootstrap_version = await VCU.loadBootstrapCurrentVersion()
   },
   methods: {
     addExtraQuery(url: string, extra_queries?: string) {

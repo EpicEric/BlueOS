@@ -331,16 +331,8 @@ export default defineConfig(({ command, mode }) => {
         '^/vehicles': {
           target: SERVER_ADDRESS,
         },
-        '^/version-chooser': {
+        '^/updates': {
           target: SERVER_ADDRESS,
-          onProxyRes: (proxyRes, request, response) => {
-            proxyRes.on('data', (data) => {
-              response.write(data)
-            })
-            proxyRes.on('end', () => {
-              response.end()
-            })
-          },
         },
         '^/wifi-manager': {
           target: SERVER_ADDRESS,

@@ -1,22 +1,16 @@
 import { gt as sem_ver_greater, parse as parse_sem_ver, SemVer } from 'semver'
 
-import Notifier from '@/libs/notifier'
-import { version_chooser_service } from '@/types/frontend_services'
 import {
-  DockerLoginInfo,
-  LocalVersionsQuery, ReleaseNotes, Version, VersionsQuery, VersionType,
+  ActivationMode, ActivationResponse, Generation, Release, ReleaseNotes, ReleasesResponse, Status,
 } from '@/types/version-chooser'
 import back_axios from '@/utils/api'
 import { fetchWithVehicleFallback } from '@/utils/helper_functions'
 
-const API_URL = '/version-chooser/v1.0'
-const DEFAULT_REMOTE_IMAGE = 'bluerobotics/blueos-core'
+const API_URL = '/updates/v1.0'
 const RELEASES_API_URL = 'https://api.github.com/repos/bluerobotics/BlueOS/releases'
 // GitHub's own render keeps the notes identical to the release page, pull request links included
 const RELEASE_NOTES_MEDIA_TYPE = 'application/vnd.github.html+json'
 const DOCS_URL = 'https://blueos.cloud/docs'
-
-const notifier = new Notifier(version_chooser_service)
 
 function fixVersion(version: string): string | null {
   /** It turned out that our semvers are wrong... oopss
@@ -43,90 +37,144 @@ function isSemVer(version: string): boolean {
   return toSemVer(version) !== null
 }
 
-function getVersionType(version: Version | null) : VersionType | undefined {
-  const tag = version?.tag
-  if (tag === undefined) {
+function isPreRelease(version: string): boolean {
+  const parsed = toSemVer(version)
+  return parsed !== null && parsed.prerelease.length > 0
+}
+
+/**
+ * Newest first. Anything that is not a version (`master`, branch builds) sorts
+ * last rather than dropping out: it is still an installable release.
+ */
+function sortReleases(releases: Release[]): Release[] {
+  return [...releases].sort((a, b) => {
+    const ver_a = toSemVer(a.version)
+    const ver_b = toSemVer(b.version)
+    if (ver_a === null || ver_b === null) {
+      return ver_a === null ? 1 : -1
+    }
+    return sem_ver_greater(ver_a, ver_b) ? -1 : 1
+  })
+}
+
+function latestRelease(releases: Release[], pre_release: boolean): Release | undefined {
+  return sortReleases(releases).find((release) => isSemVer(release.version)
+    && isPreRelease(release.version) === pre_release)
+}
+
+/**
+ * The release the vehicle should be offered. A vehicle on a pre-release stays on
+ * the pre-release line, which is what someone who opted into beta expects; one on
+ * a stable version is only offered stable builds.
+ * @param current_version - Version the running generation reports
+ */
+function getAvailableUpdate(current_version: string, releases: Release[]): Release | undefined {
+  const latest_stable = latestRelease(releases, false)
+  const latest_beta = latestRelease(releases, true)
+  const candidate = isPreRelease(current_version) ? latest_beta : latest_stable
+
+  if (candidate === undefined || candidate.version === current_version) {
     return undefined
   }
-
-  if (tag === 'master') { return VersionType.Master }
-  if (isSemVer(tag) && tag.includes('beta')) { return VersionType.Beta }
-  if (isSemVer(tag) && !tag.includes('beta')) { return VersionType.Stable }
-  return VersionType.Custom
-}
-
-function sortVersions(versions: Version[]): Version[] {
-  return versions.sort(
-    (a: Version, b: Version) => {
-      const ver_a = fixVersion(a.tag)
-      const ver_b = fixVersion(b.tag)
-      if (ver_a === null) {
-        return 1
-      }
-      if (ver_b === null) {
-        return -1
-      }
-      return sem_ver_greater(new SemVer(ver_a), new SemVer(ver_b)) === true ? -1 : 1
-    },
-  )
-}
-
-function compareVersions(a: Version, b: Version): number {
-  return Date.parse(b.last_modified) - Date.parse(a.last_modified)
-}
-
-function sortImages(versions_query: VersionsQuery): VersionsQuery {
-  return {
-    local: versions_query.local.sort(compareVersions),
-    remote: versions_query.remote.sort(compareVersions),
-    error: versions_query.error,
+  const current = toSemVer(current_version)
+  const offered = toSemVer(candidate.version)
+  if (current !== null && offered !== null && !sem_ver_greater(offered, current)) {
+    return undefined
   }
+  return candidate
 }
 
-function getLatestBeta(versions_query: VersionsQuery): Version | undefined {
-  const ordered_list = sortVersions(
-    versions_query.remote
-      .filter((image) => isSemVer(image.tag) && image.tag.includes('beta')),
-  )
-  return ordered_list?.[0]
-}
-
-function getLatestStable(versions_query: VersionsQuery): Version | undefined {
-  const ordered_list = sortVersions(
-    versions_query.remote
-      .filter((image) => isSemVer(image.tag) && !image.tag.includes('beta')),
-  )
-  return ordered_list?.[0]
-}
-
-function getMaster(versions_query: VersionsQuery): Version | undefined {
-  return versions_query.remote.find((version: Version) => version.tag === 'master')
-}
-
-function getLatestVersion(versions_query: VersionsQuery, current_version: Version): Version | undefined {
-  const beta_version = getLatestBeta(versions_query)
-  const stable_version = getLatestStable(versions_query)
-
-  switch (getVersionType(current_version)) {
-    case VersionType.Master:
-      return getMaster(versions_query)
-
-    case VersionType.Beta: {
-      let last_version = beta_version
-      if (stable_version !== undefined && beta_version !== undefined) {
-        [last_version] = sortVersions([stable_version, beta_version])
-      }
-      return versions_query.remote.find((version) => version.tag === last_version?.tag)
-    }
-
-    case VersionType.Stable: {
-      return versions_query.remote.find((version) => version.tag === stable_version?.tag)
-    }
-
-    case VersionType.Custom:
-    default:
-      return undefined
+/**
+ * The docs site publishes one path per release line (`/docs/1.4/`) up to the current stable one.
+ * Pre-releases of a line that is not out yet, and anything that is not a 1.x+ version, are only
+ * covered by `/docs/latest/`.
+ */
+function getDocsUrl(version: string, latest_stable_version?: string): string {
+  const parsed = toSemVer(version)
+  if (parsed === null || parsed.major < 1) {
+    return `${DOCS_URL}/latest/`
   }
+
+  const latest_stable = latest_stable_version ? toSemVer(latest_stable_version) : null
+  const release_line = new SemVer(`${parsed.major}.${parsed.minor}.0`)
+  const line_is_documented = latest_stable === null
+    ? parsed.prerelease.length === 0
+    : !sem_ver_greater(release_line, latest_stable)
+
+  return line_is_documented ? `${DOCS_URL}/${parsed.major}.${parsed.minor}/` : `${DOCS_URL}/latest/`
+}
+
+/**
+ * The daemon answers errors as `{ message }`, which is more useful than axios'
+ * generic text, so it is preferred when present.
+ */
+function describeError(error: unknown): string {
+  const candidate = error as { response?: { data?: { message?: string } }, message?: string }
+  return candidate?.response?.data?.message ?? candidate?.message ?? `${error}`
+}
+
+async function loadStatus(): Promise<Status> {
+  return back_axios({
+    method: 'get',
+    url: `${API_URL}/status`,
+  }).then((response) => response.data as Status)
+}
+
+async function loadGenerations(): Promise<Generation[]> {
+  return back_axios({
+    method: 'get',
+    url: `${API_URL}/generations`,
+  }).then((response) => response.data.generations as Generation[])
+}
+
+async function activateGeneration(generation: number, mode: ActivationMode): Promise<ActivationResponse> {
+  return back_axios({
+    method: 'post',
+    url: `${API_URL}/generations/${generation}/activate`,
+    params: { mode },
+  }).then((response) => response.data as ActivationResponse)
+}
+
+async function deleteGeneration(generation: number): Promise<void> {
+  await back_axios({
+    method: 'delete',
+    url: `${API_URL}/generations/${generation}`,
+  })
+}
+
+async function restartServices(): Promise<ActivationResponse> {
+  return back_axios({
+    method: 'post',
+    url: `${API_URL}/restart`,
+  }).then((response) => response.data as ActivationResponse)
+}
+
+/**
+ * The manifest is remote, so an unreachable publisher is reported alongside the
+ * list instead of being thrown: the generations on the card are still usable.
+ */
+async function loadReleases(): Promise<ReleasesResponse> {
+  return back_axios({
+    method: 'get',
+    url: `${API_URL}/releases`,
+  }).then((response) => response.data as ReleasesResponse)
+}
+
+async function activateRelease(version: string, mode: ActivationMode): Promise<ActivationResponse> {
+  return back_axios({
+    method: 'post',
+    url: `${API_URL}/releases/${version}/activate`,
+    params: { mode },
+    timeout: 30 * 60 * 1000, // the closure comes from a binary cache, which can be slow
+  }).then((response) => response.data as ActivationResponse)
+}
+
+async function downloadRelease(version: string): Promise<void> {
+  await back_axios({
+    method: 'post',
+    url: `${API_URL}/releases/${version}/download`,
+    timeout: 30 * 60 * 1000,
+  })
 }
 
 interface GitHubRelease {
@@ -154,146 +202,53 @@ async function requestReleaseNotes(version: string): Promise<ReleaseNotes | unde
       html: release.body_html.replaceAll('<a ', '<a target="_blank" rel="noopener noreferrer" '),
       url: release.html_url,
     }
-  } catch (error) {
+  } catch {
     return undefined
   }
 }
 
 /**
- * Only the official BlueOS image is covered: forks have their own releases, and tags that are
- * not versions (`master`, `factory`, branch builds) have no release to point at, which GitHub
- * answers with a 404. Notes are cosmetic, so an unreachable GitHub reads as "no notes".
- * Answers are shared between every card asking for the same version, and misses are forgotten
- * so a vehicle that comes online later can still get the notes.
- * @param tag - Docker tag of the image, e.g. `1.4.5` or `1.5.0-beta.42`
+ * Only versions with a GitHub release are covered: `master`, branch builds and
+ * custom tags answer with a 404. Notes are cosmetic, so an unreachable GitHub
+ * reads as "no notes". Answers are shared between every card asking for the same
+ * version, and misses are forgotten so a vehicle that comes online later can
+ * still get the notes.
+ * @param version - Version string, e.g. `1.4.5` or `1.5.0-beta.42`
  */
-async function getReleaseNotes(repository: string, tag: string): Promise<ReleaseNotes | undefined> {
-  const version = fixVersion(tag)
-  if (repository !== DEFAULT_REMOTE_IMAGE || version === null) {
+async function getReleaseNotes(version: string): Promise<ReleaseNotes | undefined> {
+  const fixed_version = fixVersion(version)
+  if (fixed_version === null) {
     return undefined
   }
 
-  let request = release_notes_requests.get(version)
+  let request = release_notes_requests.get(fixed_version)
   if (request === undefined) {
-    request = requestReleaseNotes(version)
-    release_notes_requests.set(version, request)
+    request = requestReleaseNotes(fixed_version)
+    release_notes_requests.set(fixed_version, request)
     request.then((notes) => {
       if (notes === undefined) {
-        release_notes_requests.delete(version)
+        release_notes_requests.delete(fixed_version)
       }
     })
   }
   return request
 }
 
-/**
- * The docs site publishes one path per release line (`/docs/1.4/`) up to the current stable one.
- * Pre-releases of a line that is not out yet, and anything that is not a 1.x+ version, are only
- * covered by `/docs/latest/`.
- * @param latest_stable_tag - Newest stable tag known, when the remote versions are available
- */
-function getDocsUrl(tag: string, latest_stable_tag?: string): string {
-  const version = toSemVer(tag)
-  if (version === null || version.major < 1) {
-    return `${DOCS_URL}/latest/`
-  }
-
-  const latest_stable = latest_stable_tag ? toSemVer(latest_stable_tag) : null
-  const release_line = new SemVer(`${version.major}.${version.minor}.0`)
-  const line_is_documented = latest_stable === null
-    ? version.prerelease.length === 0
-    : !sem_ver_greater(release_line, latest_stable)
-
-  return line_is_documented ? `${DOCS_URL}/${version.major}.${version.minor}/` : `${DOCS_URL}/latest/`
-}
-
-async function loadLocalVersions(): Promise<LocalVersionsQuery> {
-  return back_axios({
-    method: 'get',
-    url: `${API_URL}/version/available/local`,
-  }).then((response) => {
-    const available_versions = response.data as LocalVersionsQuery
-    available_versions.local = available_versions.local.sort(compareVersions)
-    return available_versions
-  })
-}
-
-async function loadAvailableVersions(remote_image_name?: string): Promise<VersionsQuery> {
-  remote_image_name = remote_image_name ?? DEFAULT_REMOTE_IMAGE
-  return back_axios({
-    method: 'get',
-    url: `${API_URL}/version/available/${remote_image_name}`,
-  }).then((response) => {
-    const available_versions = response.data as VersionsQuery
-    return sortImages(available_versions)
-  })
-}
-
-async function loadCurrentVersion(): Promise<Version> {
-  return back_axios({
-    method: 'get',
-    url: `${API_URL}/version/current/`,
-  }).then((response) => response.data as Version)
-}
-
-async function loadBootstrapCurrentVersion(): Promise<string | undefined> {
-  return back_axios({
-    method: 'get',
-    url: `${API_URL}/bootstrap/current/`,
-    // eslint-disable-next-line no-extra-parens
-  }).then((response) => (typeof response.data === 'object' ? undefined : response.data))
-    // The update process may fail and the user may be in bootstrap-backup
-    // This allows us to have the frontend working without crashing
-    // But still visible on the back
-    .catch((error) => {
-      const message = `Failed to fetch bootstrap version: ${error}`
-      notifier.pushWarning('VERSION_CHOOSER_FAILED_BOOTSTRAP_VERSION', message)
-      return undefined
-    })
-}
-
-async function dockerLogin(info: DockerLoginInfo): Promise<void> {
-  await back_axios({
-    method: 'post',
-    url: `${API_URL}/docker/login/`,
-    data: info,
-  })
-}
-
-async function dockerLogout(info: DockerLoginInfo): Promise<void> {
-  await back_axios({
-    method: 'post',
-    url: `${API_URL}/docker/logout/`,
-    data: info,
-  })
-}
-
-async function dockerAccounts(): Promise<DockerLoginInfo[]> {
-  const data = await back_axios({
-    method: 'get',
-    url: `${API_URL}/docker/accounts/`,
-  })
-
-  return data.data as DockerLoginInfo[]
-}
-
 export {
-  DEFAULT_REMOTE_IMAGE,
-  dockerAccounts,
-  dockerLogin,
-  dockerLogout,
-  fixVersion,
+  activateGeneration,
+  activateRelease,
+  deleteGeneration,
+  describeError,
+  downloadRelease,
+  getAvailableUpdate,
   getDocsUrl,
-  getLatestBeta,
-  getLatestStable,
-  getLatestVersion,
   getReleaseNotes,
-  getVersionType,
+  isPreRelease,
   isSemVer,
-  loadAvailableVersions,
-  loadBootstrapCurrentVersion,
-  loadCurrentVersion,
-  loadLocalVersions,
-  sortImages,
-  sortVersions,
+  latestRelease,
+  loadGenerations,
+  loadReleases,
+  loadStatus,
+  restartServices,
+  sortReleases,
 }

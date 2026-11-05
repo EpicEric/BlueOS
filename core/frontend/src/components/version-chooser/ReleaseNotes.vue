@@ -33,11 +33,7 @@ import { getReleaseNotes } from '@/utils/version_chooser'
 export default Vue.extend({
   name: 'ReleaseNotes',
   props: {
-    repository: {
-      type: String,
-      required: true,
-    },
-    tag: {
+    version: {
       type: String,
       required: true,
     },
@@ -49,7 +45,7 @@ export default Vue.extend({
     }
   },
   async mounted() {
-    this.notes = await getReleaseNotes(this.repository, this.tag)
+    this.notes = await getReleaseNotes(this.version)
     this.loading = false
   },
 })
