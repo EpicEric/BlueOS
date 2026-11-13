@@ -220,6 +220,17 @@ When restarting the development environment you may need to remove the volumes t
 docker compose -f core/compose/compose.yml down
 ```
 
+### NixOS
+
+An experimental Nix flake at the repository root builds BlueOS and the OS around it, including images for Raspberry Pi 4 and 5. It provides a development shell and the packages the services need:
+
+```bash
+nix develop
+nix build .#blueos-core
+```
+
+See [`nix/README.md`](nix/README.md) for more information.
+
 ### Known issues
 
 Docker compose is not fully compatible with a standard installation of BlueOS.
