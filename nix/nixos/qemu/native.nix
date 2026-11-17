@@ -16,7 +16,7 @@ in
 {
   imports = [
     ./common.nix
-    ../../modules/blueos
+    ../../modules/blueos/native.nix
   ];
 
   image.efiSupport = false;

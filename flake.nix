@@ -104,21 +104,75 @@
         lib.nixosSystem {
           system = "aarch64-linux";
           specialArgs = {
-            blueos = self.packages.aarch64-linux.blueos-core;
             sdImageModule = "${nixpkgs}/nixos/modules/installer/sd-card/sd-image.nix";
             ubootPackage = self.packages.aarch64-linux.uboot-rpi;
           };
           modules = [
-            ./nix/modules/blueos
+            ./nix/modules/blueos/native.nix
             nixos-hardware.nixosModules."raspberry-pi-${board}"
             ./nix/nixos/rpi/pi${board}
             {
-              services.blueos.board = "pi${board}";
-              services.blueos.updates.manifestUrl = manifestUrl;
+              services.blueos = {
+                package = self.packages.aarch64-linux.blueos-core;
+                board = "pi${board}";
+                updates.manifestUrl = manifestUrl;
+                rollback.enable = lib.mkDefault true;
+              };
             }
           ]
           ++ lib.optional (version != null) { services.blueos.version = version; }
           ++ lib.optional (channel != null) { services.blueos.channel = channel; }
+          ++ lib.optional (cache != null) { services.blueos.cache = cache; };
+        };
+
+      # The Docker deployment. Same board support and the same SD image, but
+      # BlueOS itself is a container the vehicle updates through the version
+      # chooser rather than a NixOS generation, so there is no `version`,
+      # `channel` or `manifestUrl`: those describe a NixOS generation, and here
+      # `docker.tag` is what decides which BlueOS is installed.
+      #
+      # By default the card ships the factory core and bootstrap images, so a
+      # brand new card comes up with BlueOS the way a Raspbian one does, without
+      # needing a registry. Pass `offline = false` for a card that is expected
+      # to have a network on first boot and should not carry 500MB of images.
+      #
+      # `tag` has to agree with the archives when they are shipped, since a
+      # loaded archive keeps its own tag; asking for another one drops the
+      # archives and the card pulls that tag on first boot instead.
+      mkGuestImage =
+        {
+          board,
+          tag ? null,
+          cache ? null,
+          offline ? true,
+        }:
+        let
+          release = self.packages.aarch64-linux.blueos-release;
+
+          containerTag = if tag != null then tag else release.tag;
+          bakeImages = offline && containerTag == release.tag;
+        in
+        lib.nixosSystem {
+          system = "aarch64-linux";
+          specialArgs = {
+            sdImageModule = "${nixpkgs}/nixos/modules/installer/sd-card/sd-image.nix";
+            ubootPackage = self.packages.aarch64-linux.uboot-rpi;
+          };
+          modules = [
+            ./nix/modules/blueos/guest.nix
+            nixos-hardware.nixosModules."raspberry-pi-${board}"
+            ./nix/nixos/rpi/pi${board}
+            {
+              services.blueos = {
+                board = "pi${board}";
+                raspberryPi.enable = true;
+                docker.tag = containerTag;
+              };
+
+              image.baseName = "blueos-pi${board}-guest-${shortRev}";
+            }
+          ]
+          ++ lib.optional bakeImages { services.blueos.docker.images = release.images; }
           ++ lib.optional (cache != null) { services.blueos.cache = cache; };
         };
 
@@ -136,7 +190,9 @@
         };
     in
     {
-      lib = { inherit mkImage; };
+      lib = {
+        inherit mkImage mkGuestImage;
+      };
 
       packages = forAllSystems (
         system:
@@ -186,6 +242,8 @@
 
         // lib.optionalAttrs (system == "aarch64-linux") {
           uboot-rpi = pkgs.callPackage ./nix/packages/uboot-rpi { };
+
+          blueos-release = pkgs.callPackage ./nix/packages/blueos-release { };
         }
         // lib.optionalAttrs (system == "x86_64-linux") {
           blueos-guest-qemu = self.nixosConfigurations.blueos-guest.config.system.build.images.qemu;
@@ -197,7 +255,7 @@
         blueos =
           { pkgs, ... }:
           {
-            imports = [ ./nix/modules/blueos ];
+            imports = [ ./nix/modules/blueos/native.nix ];
 
             services.blueos.package = self.packages.${pkgs.stdenv.hostPlatform.system}.blueos-core;
           };
@@ -208,6 +266,9 @@
       nixosConfigurations = {
         blueos-pi4 = mkImage { board = "4"; };
         blueos-pi5 = mkImage { board = "5"; };
+
+        blueos-pi4-guest = mkGuestImage { board = "4"; };
+        blueos-pi5-guest = mkGuestImage { board = "5"; };
 
         blueos-guest = mkQemuGuest {
           name = "guest";

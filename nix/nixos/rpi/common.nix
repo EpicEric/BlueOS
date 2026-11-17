@@ -2,7 +2,6 @@
   config,
   lib,
   pkgs,
-  blueos,
   ubootPackage,
   sdImageModule,
   ...
@@ -10,7 +9,7 @@
 let
   inherit (lib) mkDefault mkForce;
 
-  install = "${blueos.passthru.src}/install";
+  install = "${config.services.blueos.source}/install";
 
   swapSize = 1024;
 
@@ -80,8 +79,6 @@ in
 
   services.blueos = {
     enable = mkDefault true;
-    package = mkDefault blueos;
-    rollback.enable = mkDefault true;
   };
 
   documentation.enable = mkDefault false;

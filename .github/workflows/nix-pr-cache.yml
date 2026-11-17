@@ -61,6 +61,14 @@ jobs:
             name: the RPi 5 system closure
             runner: ubuntu-24.04-arm
             installable: nixosConfigurations.blueos-pi5
+          - id: pi4-guest
+            name: the RPi 4 Docker guest closure
+            runner: ubuntu-24.04-arm
+            installable: nixosConfigurations.blueos-pi4-guest
+          - id: pi5-guest
+            name: the RPi 5 Docker guest closure
+            runner: ubuntu-24.04-arm
+            installable: nixosConfigurations.blueos-pi5-guest
           - id: guest
             name: the guest QEMU system closure
             runner: ubuntu-24.04
