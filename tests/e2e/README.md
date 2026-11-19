@@ -29,6 +29,25 @@ uv run --env-file .env pytest scenarios/core -v
 `E2E_CORE_IMAGE` and `E2E_BOOTSTRAP_IMAGE` select the images. Defaults are the `master` tags. Missing images are pulled
 and loaded into the VM.
 
+`E2E_TARGETS` picks which targets run. It defaults to `sil`, which is what CI runs:
+
+```bash
+E2E_TARGETS=native uv run --env-file .env pytest    # BlueOS as the guest OS
+E2E_TARGETS=sil,native uv run --env-file .env pytest
+```
+
+## The native target
+
+The `native` target boots `nixosConfigurations.blueos-native`, so BlueOS runs as the guest OS instead of in containers
+and no Docker is involved. It needs `nix` on `PATH` and builds the image before each run, which the first time also
+compiles `blueos-core`. The flake output can be built on its own with:
+
+```bash
+nix build .#packages.x86_64-linux.blueos-native-qemu
+```
+
+Tests that only make sense against the container images skip themselves here, through `Target.runs_docker_images`.
+
 ## Test a local BlueOS build
 
 Build the core image from this checkout and point the tests to it:

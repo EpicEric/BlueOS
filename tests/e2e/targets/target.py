@@ -7,6 +7,8 @@ T = TypeVar("T")
 
 class Target(ABC):
     name: ClassVar[str]
+    # Whether BlueOS runs the images the suite is given, instead of being the OS itself
+    runs_docker_images: ClassVar[bool] = False
 
     def __init__(self) -> None:
         self.features: dict[object, object] = {}
@@ -24,6 +26,7 @@ class Target(ABC):
 
     @abstractmethod
     def up(self) -> None:
+        """Returns once BlueOS answers, which is what the fixtures rely on"""
         ...
 
     @abstractmethod

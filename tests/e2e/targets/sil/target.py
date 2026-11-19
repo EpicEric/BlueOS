@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 class SilTarget(Target):
     name = "sil"
+    runs_docker_images = True
     vm_ssh_forward_port = 2222
     vm_http_forward_port = 8080
     required_tools = ("docker", "qemu-img", "qemu-system-x86_64", "ssh", "sshpass")
